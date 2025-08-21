@@ -1,0 +1,186 @@
+[
+  {
+    "id": "adm_endereco",
+    "question": "Qual o endereço do consultório?",
+    "answer": "Endereço: Rua Domingos de Morais, 2187 — Bloco Paris, conj. 210, Vila Mariana, São Paulo - SP, CEP 04035-000.\nAbrir rota agora no Google Maps: https://goo.gl/maps/KgCNzjkcHbsrW3sz6",
+    "source": "Site — Contato",
+    "tags": ["administrativo","localizacao"],
+    "last_reviewed": "2025-08-18"
+  },
+  {
+    "id": "adm_contato",
+    "question": "Qual é o WhatsApp / telefone para falar com a equipe?",
+    "answer": "Pode falar comigo por aqui no (11) 95056-4577 (24h) ou pelo (11) 91060-1374 (horário comercial). \nSe eu não responder na hora, te retorno o quanto antes.",
+    "source": "Site — Contato",
+    "tags": ["administrativo","contato"],
+    "last_reviewed": "2025-08-18"
+  },
+  {
+    "id": "agendamento_dados_obrigatorios",
+    "question": "Quais dados você precisa para agendar?",
+    "answer": "Preciso dos seguintes dados para agendar, por favor:\nNome completo:\nData de nascimento:\nE-mail:\nPossui plano de saúde? Se sim, qual?\nDeseja nota fiscal da consulta?\nComo conheceu o Dr Petronio?",
+    "source": "Orientações internas do consultório",
+    "tags": ["administrativo","agendamento","documentos"],
+    "last_reviewed": "2025-08-18"
+  },
+  {
+    "id": "agendamento_nf_dados",
+    "question": "Quais dados precisa para emitir a nota fiscal?",
+    "answer": "Perfeito! Para emissão da nota fiscal, preciso:\nCPF:\nEndereço:",
+    "source": "Orientações internas do consultório",
+    "tags": ["administrativo","financeiro","documentos"],
+    "last_reviewed": "2025-08-18"
+  },
+  {
+    "id": "agendamento_cancelamento",
+    "question": "Como remarcar ou cancelar a consulta?",
+    "answer": "Se precisar cancelar, sem problema. Sempre que der, me avise com 24h de antecedência.\nSe preferir, posso tentar um novo horário já agora — quer que eu veja outra opção?",
+    "source": "Política administrativa do consultório",
+    "tags": ["administrativo","agendamento"],
+    "last_reviewed": "2025-08-18"
+  },
+  {
+    "id": "consulta_preco_retorno",
+    "question": "Qual o valor da consulta? O retorno está incluso?",
+    "answer": "A consulta (presencial ou on-line) é R$ 700, com retorno incluso em até 45 dias.\nAtendemos consulta particular; emitimos nota fiscal e você pode solicitar reembolso ao seu plano conforme as regras dele.",
+    "source": "Política administrativa do consultório",
+    "tags": ["administrativo","financeiro"],
+    "last_reviewed": "2025-08-18"
+  },
+  {
+    "id": "teleconsulta_disponibilidade",
+    "question": "Vocês atendem por teleconsulta?",
+    "answer": "Atendemos pacientes do Brasil e do mundo inteiro por teleconsulta (Google Meet), com o mesmo valor da consulta presencial.",
+    "source": "Orientações internas do consultório",
+    "tags": ["administrativo","teleconsulta","agendamento"],
+    "last_reviewed": "2025-08-18"
+  },
+  {
+    "id": "teleconsulta_orientacoes",
+    "question": "Como funciona a teleconsulta e o pagamento?",
+    "answer": "Como se conectar: 1) Fale conosco no WhatsApp +55 11 91060-1374. 2) Baixe o app Google Meet ou acesse https://apps.google.com/meet/. 3) Você receberá um código/link pelo WhatsApp. 4) Garanta boa internet e esteja pronto(a) 15 minutos antes.\nO atendimento começa após confirmação do pagamento por PIX (chave: 29.854.133/0001-07). No campo de descrição, coloque seu nome e a data da consulta.",
+    "source": "Orientações internas do consultório",
+    "tags": ["teleconsulta","financeiro","agendamento"],
+    "last_reviewed": "2025-08-18"
+  },
+  {
+    "id": "envio_resultados_exames",
+    "question": "Posso enviar exames pelo WhatsApp?",
+    "answer": "Pode enviar seus exames por aqui, tudo o que tiver.\nQuando o resultado exigir conversa mais detalhada, combinamos consulta para analisar com calma.\nPara segurança, se puder, envie em PDF; fotos podem perder legibilidade.",
+    "source": "Orientações internas do consultório",
+    "tags": ["administrativo","exames","privacidade"],
+    "last_reviewed": "2025-08-18"
+  },
+  {
+    "id": "docs_primeira_consulta",
+    "question": "O que levar na primeira consulta?",
+    "answer": "Se tiver, traga exames prévios (PSA, ultrassom, biópsia, urocultura, tomografia, ressonância) com laudos completos.\nTraga também a lista de remédios que usa e alergias.",
+    "source": "Orientações internas do consultório",
+    "tags": ["administrativo","documentos"],
+    "last_reviewed": "2025-08-18"
+  },
+  {
+    "id": "tempo_consulta",
+    "question": "Quanto tempo dura a consulta?",
+    "answer": "Reserve em média de 45 minutos a 1 hora.\nPode variar um pouco conforme a necessidade do seu caso.",
+    "source": "Orientações internas do consultório",
+    "tags": ["administrativo","agendamento"],
+    "last_reviewed": "2025-08-18"
+  },
+  {
+    "id": "pre_psa",
+    "question": "Como me preparo para o exame de PSA?",
+    "answer": "Para o PSA, evite ejacular nas 48h anteriores e evite ciclismo ou exercício intenso nesse período.\nSe fez toque retal, ultrassom transretal ou biópsia recentemente, aguarde o prazo orientado.",
+    "source": "Orientações internas do consultório",
+    "tags": ["preparo","exames","psa"],
+    "last_reviewed": "2025-08-18"
+  },
+  {
+    "id": "pre_urofluxometria",
+    "question": "Como me preparo para a urofluxometria?",
+    "answer": "Beba água e chegue com vontade de urinar; tente não urinar 2–3 horas antes.\nEvite diuréticos sem orientação no dia.\nSe usa sonda, combine previamente com a equipe.\nDepois do exame, geralmente é medido o resíduo com ultrassom.",
+    "source": "Orientações internas do consultório",
+    "tags": ["preparo","exames"],
+    "last_reviewed": "2025-08-18"
+  },
+  {
+    "id": "preparo_urina_urocultura",
+    "question": "Como coletar urina para exame/urocultura?",
+    "answer": "Use frasco estéril e faça higiene íntima antes.\nDespreze o primeiro jato e colete o jato médio sem interromper.\nEntregue ao laboratório em até 2h (ou mantenha refrigerado por curto período).\nSe estiver em antibiótico, confirme o momento certo com o médico.",
+    "source": "Orientações internas do consultório",
+    "tags": ["preparo","exames"],
+    "last_reviewed": "2025-08-18"
+  },
+  {
+    "id": "pre_biopsia_prostata",
+    "question": "Como me preparo para biópsia de próstata?",
+    "answer": "Pode haver jejum e ajuste/suspensão de anticoagulantes — siga a receita.\nGeralmente é usado antibiótico profilático.\nAvise alergias, uso de anticoagulantes e comorbidades.\nSe indicado, ir com acompanhante e chegar com antecedência.",
+    "source": "Orientações internas do consultório",
+    "tags": ["preparo","biopsia","procedimentos"],
+    "last_reviewed": "2025-08-18"
+  },
+  {
+    "id": "pos_biopsia_prostata",
+    "question": "O que é esperado após biópsia de próstata?",
+    "answer": "Pode aparecer sangue leve na urina, fezes e sêmen por alguns dias.\nHidrate-se, evite esforço e relações por 3–5 dias.\nSe surgir febre, calafrios, dor forte ou sangramento que não melhora, avise a equipe ou procure atendimento.",
+    "source": "Orientações internas do consultório",
+    "tags": ["pos-op","biopsia","triagem"],
+    "last_reviewed": "2025-08-18"
+  },
+  {
+    "id": "pos_vasectomia",
+    "question": "Quais cuidados após vasectomia?",
+    "answer": "Use cueca de sustentação e gelo local nas primeiras 24–48h.\nEvite esforço e relações por cerca de 7 dias (salvo orientação).\nHematomas leves podem ocorrer; dor intensa ou febre merecem atenção.\nMantenha contracepção até espermograma zerado.",
+    "source": "Orientações internas do consultório",
+    "tags": ["pos-op","procedimentos"],
+    "last_reviewed": "2025-08-18"
+  },
+  {
+    "id": "pos_cistoscopia",
+    "question": "Quais cuidados após cistoscopia?",
+    "answer": "Ardor ao urinar e urina rosada por 24–48h são comuns.\nBeba bastante água; use analgésicos se prescritos.\nProcure serviço se houver febre, coágulos persistentes ou dor forte.\nQualquer dúvida, me chama aqui que te ajudo.",
+    "source": "Orientações internas do consultório",
+    "tags": ["pos-op","procedimentos"],
+    "last_reviewed": "2025-08-18"
+  },
+  {
+    "id": "cuidados_sonda_vesical",
+    "question": "Quais cuidados com a sonda vesical em casa?",
+    "answer": "Mantenha a bolsa sempre abaixo do nível da bexiga.\nHigienize o meato e conexões diariamente; evite desconectar sem orientação.\nSe a urina parar de drenar, houver dor, febre ou vazamento, avise imediatamente.\nTrocas/retiradas são combinadas com a equipe.",
+    "source": "Orientações internas do consultório",
+    "tags": ["pos-op","procedimentos","triagem"],
+    "last_reviewed": "2025-08-18"
+  },
+  {
+    "id": "orientacoes_cateter_duplo_j",
+    "question": "É normal desconforto com o cateter duplo J?",
+    "answer": "Pode haver ardor ao urinar e um incômodo lombar leve — é esperado.\nHidrate-se bem; antiespasmódicos podem ser prescritos.\nSe aparecer febre, dor forte, coágulos ou dificuldade para urinar, procure avaliação.\nA retirada do cateter será combinada com a equipe.",
+    "source": "Orientações internas do consultório",
+    "tags": ["pos-op","procedimentos","triagem"],
+    "last_reviewed": "2025-08-18"
+  },
+  {
+    "id": "cirurgia_precos_estimativas",
+    "question": "Quanto custa a cirurgia? Vocês parcelam?",
+    "answer": "Estimativas particulares (total: hospital, materiais e honorários): Rezum ~R$ 30 mil; HoLEP ~R$ 35 mil; cirurgia robótica ~R$ 50 mil; vasectomia ~R$ 8 mil; postectomia ~R$ 8 mil.\nSe você tem convênio, parte ou todo o custo pode ser coberto.\nOrçamento oficial e condições/parcelamento são definidos após a consulta.",
+    "source": "Política administrativa do consultório",
+    "tags": ["cirurgia","orcamento","financeiro"],
+    "last_reviewed": "2025-08-18"
+  },
+  {
+    "id": "triagem_urgencias_geral",
+    "question": "Em que situações devo procurar urgência?",
+    "answer": "Se algo mudou de repente e está te preocupando, me chama aqui que te oriento.\nVá direto ao pronto-socorro se tiver: não consegue urinar, febre alta com dor para urinar, sangue em grande quantidade, dor testicular súbita/intensa, dor lombar com febre, ereção dolorosa por mais de 4h.",
+    "source": "Protocolo de triagem — Urologia",
+    "tags": ["triagem","urgencia"],
+    "last_reviewed": "2025-08-18"
+  },
+  {
+    "id": "triagem_dor_testicular",
+    "question": "Estou com dor testicular forte. O que faço?",
+    "answer": "Dor testicular forte que começou de repente pode ser torção, e o tempo conta.\nVá imediatamente ao pronto-socorro mais próximo — não espere melhorar nem aguarde resposta.\nDepois me avise por aqui como ficou, para seguirmos o cuidado.",
+    "source": "Protocolo de triagem — Urologia",
+    "tags": ["triagem","urgencia"],
+    "last_reviewed": "2025-08-18"
+  }
+]
