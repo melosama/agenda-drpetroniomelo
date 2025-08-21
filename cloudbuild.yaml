@@ -1,4 +1,4 @@
-# cloudbuild.yaml — build & deploy from source para Cloud Run
+# cloudbuild.yaml
 steps:
   - name: gcr.io/cloud-builders/gcloud
     entrypoint: bash
@@ -11,6 +11,9 @@ steps:
           --source . \
           --allow-unauthenticated \
           --set-secrets=OPENROUTER_API_KEY=OPENROUTER_API_KEY:latest,WHATSAPP_TOKEN=WHATSAPP_TOKEN:latest,VERIFY_TOKEN=VERIFY_TOKEN:latest,META_APP_SECRET=META_APP_SECRET:latest
+
+options:
+  logging: CLOUD_LOGGING_ONLY
 substitutions:
   _DUMMY: "noop"
 # Você pode definir PROJECT_ID/REGION/SERVICE como variáveis de ambiente do Trigger.
