@@ -348,7 +348,7 @@ async function llmReply(wa_id, userText) {
   const body = {
     model: OPENROUTER_MODEL,
     messages,
-    temperature: 0.1,
+    temperature: 0.3,
     top_p: 0.9,
     // max_tokens: 256, // se quiser limitar
   };
@@ -377,11 +377,28 @@ async function llmReply(wa_id, userText) {
     if (context && picks?.length) {
       const best = picks[0];
       let text = best.answer.trim();
-      if (sources?.length) text += "\n\nFontes:\n" + sources.map(s => `- ${s}`).join("\n");
-      if (RAG_DIAG) {
-        const bestScore = scored?.[0]?.score != null ? scored[0].score.toFixed(3) : "n/a";
-        text += `\n\n(RAG: ON | best=${bestScore} thr=${RAG_SIM_THRESHOLD} | LLM: ${status})`;
-      }
+      
+      // tente gerar resposta mais natural com LLM
+      try {
+        const body2 = {
+          model: OPENROUTER_MODEL,
+          messages: [
+            { role: "system", content: systemPrompt("") },
+            { role: "user", content: `Responda de forma breve e natural ao paciente usando o texto a seguir como referência:\n\n${best.answer}` }
+          ],
+          temperature: 0.5,
+          top_p: 0.9,
+        };
+        const rr = await withTimeout(
+          (signal) => fetch(OPENROUTER_URL, { method: "POST", headers, body: JSON.stringify(body2), signal }),
+          12000, null
+        );
+        if (rr && rr.ok) {
+          const t = (await rr.json())?.choices?.[0]?.message?.content?.trim();
+          if (t) text = t;
+        }
+      } catch {}
+
       return text;
     }
     // Sem RAG → genérico
