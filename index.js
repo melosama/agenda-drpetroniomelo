@@ -51,7 +51,12 @@ function constantTimeEqual(a, b) {
   return crypto.timingSafeEqual(aBuf, bBuf);
 }
 function normalize(pt) {
-  return (pt || "").normalize("NFD").replace(/[\u0300-\u036f]/g, "").toLowerCase();
+    return (pt || "")
+    .normalize("NFD")
+    .replace(/[\u0300-\u036f]/g, "")
+    .replace(/\s+/g, " ")
+    .trim()
+    .toLowerCase();
 }
 function validateSignature(req) {
   if (!META_APP_SECRET) return true; // sem assinatura → aceitar (ambiente de teste)
