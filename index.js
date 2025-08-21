@@ -1,4 +1,4 @@
-/// Louvor e Glória a Ti, Senhor
+/// Louvor e Glória a Ti, Senhor. Cristo Palavra de Deus
 
 import express from "express";
 import crypto from "crypto";
