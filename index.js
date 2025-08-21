@@ -1,3 +1,5 @@
+// Louvor e Glória a Ti, Senhor
+
 import express from "express";
 import crypto from "crypto";
 import { Storage } from "@google-cloud/storage";
