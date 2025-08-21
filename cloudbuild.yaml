@@ -5,9 +5,9 @@ steps:
     args:
       - -lc
       - |
-        gcloud run deploy ${SERVICE} \
-          --project=${PROJECT_ID} \
-          --region=${REGION} \
+        gcloud run deploy agenda-drpetroniomelo \
+          --project=$PROJECT_ID \
+          --region=southamerica-east1 \
           --source . \
           --allow-unauthenticated \
           --set-secrets=OPENROUTER_API_KEY=OPENROUTER_API_KEY:latest,WHATSAPP_TOKEN=WHATSAPP_TOKEN:latest,VERIFY_TOKEN=VERIFY_TOKEN:latest,META_APP_SECRET=META_APP_SECRET:latest
