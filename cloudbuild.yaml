@@ -5,7 +5,7 @@ steps:
     args:
       - -lc
       - |
-        gcloud run deploy agenda-drpetroniomelo \
+        gcloud run deploy webhook-assistente \
           --project=$PROJECT_ID \
           --region=southamerica-east1 \
           --source . \
