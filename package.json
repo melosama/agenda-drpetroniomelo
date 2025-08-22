@@ -1,6 +1,6 @@
 {
   "name": "webhook-assistente",
-  "version": "1.0.0",
+  "version": "1.1.0",
   "type": "module",
   "engines": {
     "node": ">=18"
@@ -10,6 +10,8 @@
   },
   "dependencies": {
     "@google-cloud/storage": "^7.17.0",
-    "express": "^4.19.2"
+    "express": "^4.19.2",
+    "googleapis": "^133.0.0",
+    "luxon": "^3.5.0"
   }
 }
