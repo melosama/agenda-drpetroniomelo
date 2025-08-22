@@ -2,6 +2,10 @@ import express from "express";
 import crypto from "crypto";
 import { Storage } from "@google-cloud/storage";
 
+// Dependências para agenda
+import { google } from "googleapis";
+import { DateTime, Interval } from "luxon";
+
 // ---------- CONFIG ----------
 const PORT = process.env.PORT || 8080;
 const API_VERSION = process.env.API_VERSION || "v22.0";
@@ -11,7 +15,7 @@ const VERIFY_TOKEN     = process.env.VERIFY_TOKEN || "";
 const META_APP_SECRET  = process.env.META_APP_SECRET || "";
 const WHATSAPP_TOKEN   = process.env.WHATSAPP_TOKEN || "";
 const PHONE_NUMBER_ID  = process.env.PHONE_NUMBER_ID || "";
-const SECRETARIA_WA    = process.env.SECRETARIA_WA || "5511910601374";
+const SECRETARIA_WA    = process.env.SECRETARIA_WA || "";
 
 // OpenRouter (LLM)
 const OPENROUTER_API_KEY = process.env.OPENROUTER_API_KEY || "";
@@ -20,25 +24,32 @@ const OPENROUTER_MODEL   = process.env.OPENROUTER_MODEL || "";
 
 // Telemetria opcional do OpenRouter
 const HTTP_REFERER = process.env.HTTP_REFERER || "";
-const X_TITLE      = process.env.X_TITLE || "Maria | Consultório Dr Petronio Melo";
+const X_TITLE      = process.env.X_TITLE || "";
 
 // RAG (KB privada no GCS) + TEI (/embed com ID Token)
 const RAG_ENABLED     = process.env.RAG_ENABLED === "1";
-const RAG_KB_GCS      = process.env.RAG_KB_GCS  || "";  // ex.: gs://drp-rag-drpetronio/kb/kb.json
-const RAG_EMB_GCS     = process.env.RAG_EMB_GCS || "";  // ex.: gs://drp-rag-drpetronio/kb/kb_embeds.json
-const TEI_URL         = process.env.TEI_URL || "";      // ex.: https://tei-embeddings-...run.app
-const TEI_EMBED_PATH  = process.env.TEI_EMBED_PATH || "/embed";
-const TEI_AUDIENCE    = process.env.TEI_AUDIENCE || TEI_URL;
-const TEI_EMBED_FIELD = process.env.TEI_EMBED_FIELD || "input";
-const TEI_ID_TOKEN    = process.env.TEI_ID_TOKEN || ""; // opcional, útil p/ teste local
+const RAG_KB_GCS      = process.env.RAG_KB_GCS  || "";  
+const RAG_EMB_GCS     = process.env.RAG_EMB_GCS || "";  
+const TEI_URL         = process.env.TEI_URL || "";      
+const TEI_EMBED_PATH  = process.env.TEI_EMBED_PATH || "";
+const TEI_AUDIENCE    = process.env.TEI_AUDIENCE || "";
+const TEI_EMBED_FIELD = process.env.TEI_EMBED_FIELD || "";
+const TEI_ID_TOKEN    = process.env.TEI_ID_TOKEN || "";
 
 // Diagnóstico e política de RAG
-const RAG_DIAG          = process.env.RAG_DIAG === "1";
+const RAG_DIAG          = process.env.RAG_DIAG === "0";
 const RAG_SIM_THRESHOLD = Number(process.env.RAG_SIM_THRESHOLD || "0.28");
 
 // Mostrar extras técnicos ao PACIENTE? (padrão: desligado)
 const APPEND_SOURCES_TO_PATIENT   = process.env.APPEND_SOURCES_TO_PATIENT === "1";
 const APPEND_RAG_DIAG_TO_PATIENT  = process.env.APPEND_RAG_DIAG_TO_PATIENT === "1";
+
+// === Configuração Calendar / Agenda ===
+const GOOGLE_CLIENT_ID     = process.env.GOOGLE_CLIENT_ID || "";
+const GOOGLE_CLIENT_SECRET = process.env.GOOGLE_CLIENT_SECRET || "";
+const GOOGLE_REFRESH_TOKEN = process.env.GOOGLE_REFRESH_TOKEN || "";
+const CALENDAR_ID          = process.env.CALENDAR_ID || "primary";
+const TIMEZONE             = process.env.TIMEZONE || "America/Sao_Paulo";
 
 // Memória curta
 const SESS = new Map(); // wa_id -> [{role, content}]
@@ -55,7 +66,7 @@ function constantTimeEqual(a, b) {
   return crypto.timingSafeEqual(aBuf, bBuf);
 }
 function normalize(pt) {
-    return (pt || "")
+  return (pt || "")
     .normalize("NFD")
     .replace(/[\u0300-\u036f]/g, "")
     .replace(/\s+/g, " ")
@@ -100,9 +111,41 @@ async function sendText(to, body) {
       25000, // 25s
       { ok: false, status: 408, text: async () => "timeout" }
     );
-    if (res.ok) return;
-    const t = await res.text();
-    console.error(`Erro ao enviar texto (tentativa ${attempt}):`, res.status, t);
+    if (res?.ok) return;
+    const t = res ? await res.text() : "no-res";
+    console.error(`Erro ao enviar texto (tentativa ${attempt}):`, res?.status, t);
+    if (attempt < 3) await sleep(600);
+  }
+}
+
+// Botões interativos
+async function sendButtons(to, bodyText, buttons) {
+  if (!PHONE_NUMBER_ID || !WHATSAPP_TOKEN) return;
+  const url = `https://graph.facebook.com/${API_VERSION}/${PHONE_NUMBER_ID}/messages`;
+  const payload = {
+    messaging_product: "whatsapp",
+    to,
+    type: "interactive",
+    interactive: {
+      type: "button",
+      body: { text: bodyText },
+      action: { buttons: buttons.slice(0,3) } // WA aceita até 3 botões
+    }
+  };
+  for (let attempt = 1; attempt <= 3; attempt++) {
+    const res = await withTimeout(
+      (signal) => fetch(url, {
+        method: "POST",
+        headers: { "Authorization": `Bearer ${WHATSAPP_TOKEN}`, "Content-Type": "application/json" },
+        body: JSON.stringify(payload),
+        signal
+      }),
+      25000,
+      { ok: false, status: 408, text: async () => "timeout" }
+    );
+    if (res?.ok) return;
+    const t = res ? await res.text() : "no-res";
+    console.error(`Erro ao enviar botões (tentativa ${attempt}):`, res?.status, t);
     if (attempt < 3) await sleep(600);
   }
 }
@@ -124,10 +167,9 @@ async function markAsRead(messageId) {
       15000,
       { ok: false, status: 408, text: async () => "timeout" }
     );
-    if (res.ok) return;
-    const txt = await res.text();
-    // Muitos 400 aqui são “Unsupported post request ...” → ignorar
-    console.warn(`markAsRead falhou (tentativa ${attempt}):`, res.status, txt);
+    if (res?.ok) return;
+    const txt = res ? await res.text() : "no-res";
+    console.warn(`markAsRead falhou (tentativa ${attempt}):`, res?.status, txt);
     if (attempt === 1) await sleep(400);
   }
 }
@@ -140,15 +182,32 @@ function waLink(numeroE164SemMais, texto) {
 // ---------- Classificador leve ----------
 function classify(text) {
   const t = normalize(text);
-  const emerg = /(febre( alta)?|sangram|sangue na urina|hematur(ia)?|dor intensa|dor muito forte|retencao urinaria|nao consigo urinar|nao estou urinando|urina nao sai)/;
+  
+  // Emergência
+  const emerg = /(febre( alta)?|sangram|sangue na urina|hematur(ia)?|dor intensa|dor muito forte|retencao urinaria|nao consigo urinar|nao estou urinando|urina nao sai|infec(c|ç)ao|infecc?ao)/;
   if (emerg.test(t)) return "emergency";
-  const billing = /(pre[çc]o|valor|custa|quanto custa|tabela|conv[eê]nio|plano de sa[úu]de|reembolso|particular|carteirinha)/;
+  
+  // pedido de convênio/humano
+  const billing = /(conv[eê]nio|plano de sa[úu]de|reembolso|carteirinha)/;
   if (billing.test(t)) return "handoff";
+  
+  // perguntas sobre preço/valor
+  const price = /(pre[çc]o|valor|custa|quanto custa|tabela|particular)/;
+  if (price.test(t)) return "other";
+
+  // ligação telefônica
   const falaDeAudio = /(audio|mensagem de voz|nota de voz|voz)/;
   const pedidoLigacao = /(ligacao|ligar|me liga|pode ligar|telefone|falar por telefone)/;
   if (!falaDeAudio.test(t) && pedidoLigacao.test(t)) return "handoff_phone";
+  
+  // humano explícito
   const hand = /(secretaria|recepcao|falar com pessoa|falar com gente|atendente real|atendente de verdade|ser humano)/;
   if (hand.test(t)) return "handoff";
+  
+  // intenção de agendamento
+  const booking = /(agendar|agenda|marcar|consulta|retorno|pos[- ]?op|p[óo]s[- ]?op|hor[aá]rio|horario|dispon[ií]vel|vagas?)/;
+  if (booking.test(t)) return "booking";
+
   return "other";
 }
 
@@ -187,7 +246,7 @@ async function replyHandoffPhone(to) {
 const storage = new Storage();
 
 function parseGcsUri(uri) {
-  const m = /^gs:\/\/([^/]+)\/(.+)$/.exec(uri || "");
+  const m = /^gs:\/\/([^\/]+)\/(.+)$/.exec(uri || "");
   if (!m) throw new Error(`URI GCS inválida: ${uri}`);
   return { bucket: m[1], name: m[2] };
 }
@@ -337,6 +396,7 @@ function systemPrompt(context = "") {
     "NÃO use emojis, emoticons ou qualquer formatação Markdown (sem **negrito**, _itálico_, listas, cabeçalhos).",
     "Nunca invente informações (endereço, horários, preços). Quando não tiver certeza, diga que vai verificar e ofereça contato com a secretária humana.",
     "Orientações de urgência DEVEM aparecer apenas quando a mensagem do paciente contiver sinais de alerta (febre alta, dor intensa, sangramento, retenção urinária) ou quando o paciente perguntar sobre urgência.",
+    "Se o paciente pedir consulta/horário, NÃO explique regras. Ofereça dois horários (um por dia nas duas próximas datas) e pergunte qual prefere.",
     context
       ? "Use o CONTEXTO CONFIÁVEL abaixo como fonte principal. Se a resposta não estiver no contexto, diga que vai confirmar e ofereça encaminhamento para a secretária."
       : "Se não houver contexto suficiente, responda com bom senso e ofereça encaminhamento para a secretária.",
@@ -364,8 +424,7 @@ async function llmReply(wa_id, userText) {
     model: OPENROUTER_MODEL,
     messages,
     temperature: 0.3,
-    top_p: 0.9,
-    // max_tokens: 256, // se quiser limitar
+    top_p: 0.9
   };
 
   let r = await withTimeout(
@@ -392,8 +451,6 @@ async function llmReply(wa_id, userText) {
     if (context && picks?.length) {
       const best = picks[0];
       let text = best.answer.trim();
-      
-      // tente gerar resposta mais natural com LLM
       try {
         const body2 = {
           model: OPENROUTER_MODEL,
@@ -402,7 +459,7 @@ async function llmReply(wa_id, userText) {
             { role: "user", content: `Responda de forma breve e natural ao paciente usando o texto a seguir como referência:\n\n${best.answer}` }
           ],
           temperature: 0.5,
-          top_p: 0.9,
+          top_p: 0.9
         };
         const rr = await withTimeout(
           (signal) => fetch(OPENROUTER_URL, { method: "POST", headers, body: JSON.stringify(body2), signal }),
@@ -413,7 +470,6 @@ async function llmReply(wa_id, userText) {
           if (t) text = t;
         }
       } catch {}
-
       return text;
     }
     // Sem RAG → genérico
@@ -423,18 +479,14 @@ async function llmReply(wa_id, userText) {
   let text = (await r.json())?.choices?.[0]?.message?.content?.trim()
            || "Certo! Pode me dar mais detalhes, por favor?";
 
-  // Logs de diagnóstico (somente servidor)
   if (RAG_DIAG) {
     const best = scored?.[0]?.score != null ? scored[0].score.toFixed(3) : "n/a";
     console.log(`[RAG] decision=${context ? "ON" : "OFF"} best=${best} thr=${RAG_SIM_THRESHOLD}`);
     }
 
-  // Opcional: só manda “Fontes” ao paciente se explicitamente habilitado
   if (APPEND_SOURCES_TO_PATIENT && context && sources?.length) {
     text += "\n\nFontes:\n" + sources.map(s => `- ${s}`).join("\n");
   }
-
-  // Opcional: só manda o rodapé “RAG: …” ao paciente se explicitamente habilitado
   if (APPEND_RAG_DIAG_TO_PATIENT) {
     const best = scored?.[0]?.score != null ? scored[0].score.toFixed(3) : "n/a";
     text += `\n\n(RAG: ${context ? "ON" : "OFF"} | best=${best} thr=${RAG_SIM_THRESHOLD})`;
@@ -485,6 +537,89 @@ app.get("/_diag/rag", async (req, res) => {
   }
 });
 
+// Utilitários de data/hora (SP)
+function fmtDate(dt) { return dt.setZone(TIMEZONE).toFormat("dd/LL (ccc)"); }
+function fmtTime(dt) { return dt.setZone(TIMEZONE).toFormat("HH:mm"); }
+
+// Google Calendar (via OAuth2 com refresh token)
+function getOAuth2Client() {
+  if (!GOOGLE_CLIENT_ID || !GOOGLE_CLIENT_SECRET || !GOOGLE_REFRESH_TOKEN) {
+    throw new Error("GOOGLE_CLIENT_ID/SECRET/REFRESH_TOKEN ausentes");
+  }
+  const oAuth2Client = new google.auth.OAuth2(GOOGLE_CLIENT_ID, GOOGLE_CLIENT_SECRET, "http://localhost");
+  oAuth2Client.setCredentials({ refresh_token: GOOGLE_REFRESH_TOKEN });
+  return oAuth2Client;
+}
+
+async function gcalFreeBusy(dayStart) {
+  const start = dayStart.startOf("day").setZone(TIMEZONE);
+  const end   = dayStart.endOf("day").setZone(TIMEZONE);
+  const auth = getOAuth2Client();
+  const calendar = google.calendar({ version: "v3", auth });
+  const fb = await calendar.freebusy.query({
+    requestBody: {
+      timeMin: start.toISO(),
+      timeMax: end.toISO(),
+      timeZone: TIMEZONE,
+      items: [{ id: CALENDAR_ID }]
+    }
+  });
+  const busy = (fb.data?.calendars?.[CALENDAR_ID]?.busy || []).map(b => ({
+    start: DateTime.fromISO(b.start, { zone: TIMEZONE }),
+    end:   DateTime.fromISO(b.end,   { zone: TIMEZONE })
+  }));
+  return busy;
+}
+
+async function gcalCreateEvent({ start, end, patientName, patientPhone }) {
+  const auth = getOAuth2Client();
+  const calendar = google.calendar({ version: "v3", auth });
+  const event = {
+    summary: `Consulta - Dr. Petronio Melo`,
+    description: `Paciente: ${patientName || "WhatsApp"}\nTelefone: +${patientPhone || ""}`,
+    start: { dateTime: start.toISO(), timeZone: TIMEZONE },
+    end:   { dateTime: end.toISO(),   timeZone: TIMEZONE }
+  };
+  const resp = await calendar.events.insert({ calendarId: CALENDAR_ID, requestBody: event });
+  return resp.data;
+}
+
+// Regras da clínica (Ter/Qui, 1h) ===
+function clinicSlotsForDay(dt) {
+  // 1=Seg ... 7=Dom ; Terça=2 ; Quinta=4
+  const weekday = dt.setZone(TIMEZONE).weekday;
+  const zdt = dt.setZone(TIMEZONE);
+  let hours = [];
+  if (weekday === 2) { hours = [14,15,16,17,18,19]; }
+  else if (weekday === 4) { hours = [9,10,11,12]; }
+  return hours.map(h => zdt.set({ hour: h, minute: 0, second: 0, millisecond: 0 }));
+}
+function isFree(slotStart, busyIntervals) {
+  const slotEnd = slotStart.plus({ hours: 1 });
+  const slot = Interval.fromDateTimes(slotStart, slotEnd);
+  return !busyIntervals.some(b => slot.overlaps(Interval.fromDateTimes(b.start, b.end)));
+}
+async function nextTwoOffers(now = DateTime.now()) {
+  const offers = [];
+  let cursor = now.setZone(TIMEZONE).startOf("day");
+  let guard = 0;
+  while (offers.length < 2 && guard < 40) {
+    guard++;
+    cursor = cursor.plus({ days: 1 });
+    const w = cursor.weekday;
+    if (w !== 2 && w !== 4) continue;
+    let busy = [];
+    try { busy = await gcalFreeBusy(cursor); } catch (e) {
+      console.error("[GCAL] freeBusy falhou:", e?.message || e);
+      return []; // sem credenciais? devolve vazio para mensagem “sem oportunidade”
+    }
+    const daySlots = clinicSlotsForDay(cursor);
+    const firstFree = daySlots.find(s => s > now && isFree(s, busy));
+    if (firstFree) offers.push({ start: firstFree, end: firstFree.plus({ hours: 1 }) });
+  }
+  return offers;
+}
+
 // ---------- WEBHOOK ----------
 app.get("/webhook", (req, res) => {
   const mode = req.query["hub.mode"];
@@ -534,8 +669,11 @@ app.post("/webhook", (req, res) => {
       const mid  = msg.id;
       if (alreadyProcessed(mid)) return;
 
+      // Clique nos botões de agendamento
+
       if (msg.type === "interactive") {
         const i = msg.interactive || {};
+        // Flow/Form (mantido do seu código)
         if (i.type === "nfm_reply" && i.nfm_reply?.response_json) {
           const data = i.nfm_reply.response_json;
           const linhas = [];
@@ -548,8 +686,27 @@ app.post("/webhook", (req, res) => {
           await sendText(from, `Perfeito, recebi seus dados.${resumo}\nJá vou verificar horários disponíveis e te retorno por aqui.`);
           return;
         }
-      }
+        
+        // Botões de horário (escassez)
+        const br = i.button_reply;
+        if (br?.id && String(br.id).startsWith("slot|")) {
+          try {
+            const startISO = String(br.id).split("|")[1];
+            const start = DateTime.fromISO(startISO, { zone: TIMEZONE });
+            const end   = start.plus({ hours: 1 });
 
+            const patientName = value?.contacts?.[0]?.profile?.name || from;
+
+            const ev = await gcalCreateEvent({ start, end, patientName, patientPhone: from });
+            await sendText(from, `Perfeito! Sua consulta com o Dr. Petronio foi agendada para ${fmtDate(start)} às ${fmtTime(start)}.`);
+          } catch (e) {
+            console.error("[GCAL] falha ao criar evento:", e?.message || e);
+            await sendText(from, "Tive uma dificuldade técnica ao agendar agora. Vou confirmar com a recepção e retorno em instantes.");
+          }
+          return;
+        }
+      }
+      
       if (msg.type === "text") {
         const userText = msg.text?.body || "";
         try { await markAsRead(mid); } catch (e) { console.warn("markAsRead falhou:", e); }
@@ -557,7 +714,7 @@ app.post("/webhook", (req, res) => {
         const intent = classify(userText);
         const norm = normalize(userText);
 
-        if (intent === "emergency" || intent === "handoff" || intent === "handoff_phone") {
+        if (intent === "emergency" || intent === "handoff" || intent === "handoff_phone" || intent === "booking") {
           if (shouldSuppress(from, intent, norm)) {
             await sendText(from, "Já estamos cuidando disso, por favor aguarde um instante.");
             return;
@@ -569,6 +726,26 @@ app.post("/webhook", (req, res) => {
         if (intent === "handoff_phone")  { await replyHandoffPhone(from); return; }
         if (intent === "handoff")        { await replyHandoff(from); return; }
 
+        // Intenção de agendamento → oferecer dois horários (escassez)
+        if (intent === "booking") {
+          let offers = [];
+          try {
+            offers = await nextTwoOffers(DateTime.now());
+          } catch (e) {
+            console.error("[Agenda] nextTwoOffers falhou:", e?.message || e);
+          }
+          if (!offers?.length) {
+            await sendText(from, "No momento não encontrei uma oportunidade imediata. Posso verificar novas datas e te retorno por aqui.");
+            return;
+          }
+          const buttons = offers.slice(0, 2).map(o => ({
+            type: "reply",
+            reply: { id: `slot|${o.start.toISO()}`, title: `${fmtDate(o.start)} • ${fmtTime(o.start)}` }
+          }));
+          await sendButtons(from, "Tenho estas oportunidades de consulta. Qual prefere?", buttons);
+          return;
+        }
+
         // Caso geral (inclui “qual seu nome?”)
         if (/qual( é| e)? (seu|seu\s+nome|o\s+seu\s+nome)\??$/i.test(userText.trim())) {
           await sendText(from, "Sou a Maria, secretária do Dr. Petronio.");
@@ -577,17 +754,18 @@ app.post("/webhook", (req, res) => {
 
         // Bloqueio de alucinação para fatos críticos se RAG não tiver contexto
         if (isCriticalFact(userText)) {
-          const { context, sources, scored, picks } = await retrieveContext(userText, 3);
+          const { context } = await retrieveContext(userText, 3);
           if (!context) {
             const seguro = [
               "Para te informar com precisão, vou confirmar com a recepção e já retorno por aqui.",
               `Se preferir falar agora com a secretária: ${waLink(SECRETARIA_WA, "Olá! Poderia me informar o endereço/telefone/horário, por favor?")}`
-              ].join("\n");
-              await sendText(from, seguro + (APPEND_RAG_DIAG_TO_PATIENT ? "\n\n(RAG: OFF — bloqueio de alucinação)" : ""));
-              return;
+            ].join("\n");
+            await sendText(from, seguro + (APPEND_RAG_DIAG_TO_PATIENT ? "\n\n(RAG: OFF — bloqueio de alucinação)" : ""));
+            return;
           }
         }
-
+        
+        // RAG/LLM padrão
         const reply = await llmReply(from, userText);
         await sleep(200 + Math.floor(Math.random()*300));
         await sendText(from, reply);
@@ -619,7 +797,13 @@ app.listen(PORT, "0.0.0.0", async () => {
     "TEI_AUDIENCE:", TEI_AUDIENCE,
     "TEI_EMBED_FIELD:", TEI_EMBED_FIELD,
     "RAG_DIAG:", RAG_DIAG,
-    "RAG_SIM_THRESHOLD:", RAG_SIM_THRESHOLD
+    "RAG_SIM_THRESHOLD:", RAG_SIM_THRESHOLD,
+    "CALENDAR_ID:", CALENDAR_ID,
+    "TIMEZONE:", TIMEZONE,
+    "GOOGLE_CLIENT_ID:", GOOGLE_CLIENT_ID,
+    "GOOGLE_CLIENT_SECRET:", GOOGLE_CLIENT_SECRET,
+    "GOOGLE_REFRESH_TOKEN:", GOOGLE_REFRESH_TOKEN
+              
   );
 });
 
