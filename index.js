@@ -256,7 +256,7 @@ async function embedQuery(text) {
   let r = await withTimeout(
     (signal) => fetch(url, {
       method: "POST",
-      headers: { "Authorization": `Bearer ${idToken}", "Content-Type": "application/json" },
+      headers: { "Authorization": `Bearer ${idToken}`, "Content-Type": "application/json" },
       body: JSON.stringify(payload),
       signal
     }),
@@ -268,7 +268,7 @@ async function embedQuery(text) {
     r = await withTimeout(
       (signal) => fetch(url, {
         method: "POST",
-        headers: { "Authorization": `Bearer ${idToken}", "Content-Type": "application/json" },
+        headers: { "Authorization": `Bearer ${idToken}`, "Content-Type": "application/json" },
         body: JSON.stringify(payload),
         signal
       }),
