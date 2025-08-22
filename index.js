@@ -36,6 +36,10 @@ const TEI_ID_TOKEN    = process.env.TEI_ID_TOKEN || ""; // opcional, útil p/ te
 const RAG_DIAG          = process.env.RAG_DIAG === "1";
 const RAG_SIM_THRESHOLD = Number(process.env.RAG_SIM_THRESHOLD || "0.28");
 
+// Mostrar extras técnicos ao PACIENTE? (padrão: desligado)
+const APPEND_SOURCES_TO_PATIENT   = process.env.APPEND_SOURCES_TO_PATIENT === "1";
+const APPEND_RAG_DIAG_TO_PATIENT  = process.env.APPEND_RAG_DIAG_TO_PATIENT === "1";
+
 // Memória curta
 const SESS = new Map(); // wa_id -> [{role, content}]
 
@@ -249,16 +253,29 @@ async function embedQuery(text) {
   const payload = {}; payload[TEI_EMBED_FIELD || "input"] = text;
 
   const started = Date.now();
-  const r = await withTimeout(
+  let r = await withTimeout(
     (signal) => fetch(url, {
       method: "POST",
-      headers: { "Authorization": `Bearer ${idToken}`, "Content-Type": "application/json" },
+      headers: { "Authorization": `Bearer ${idToken}", "Content-Type": "application/json" },
       body: JSON.stringify(payload),
       signal
     }),
-    15000,
+    30000,
     null
   );
+  if (!r) {
+    await sleep(600);
+    r = await withTimeout(
+      (signal) => fetch(url, {
+        method: "POST",
+        headers: { "Authorization": `Bearer ${idToken}", "Content-Type": "application/json" },
+        body: JSON.stringify(payload),
+        signal
+      }),
+      30000,
+      null
+    );
+  }
   if (!r) { console.error("[RAG] /embed timeout"); return null; }
   if (!r.ok) {
     const t = await r.text();
@@ -406,12 +423,20 @@ async function llmReply(wa_id, userText) {
   let text = (await r.json())?.choices?.[0]?.message?.content?.trim()
            || "Certo! Pode me dar mais detalhes, por favor?";
 
-  if (context && sources?.length) {
-    text += "\n\nFontes:\n" + sources.map(s => `- ${s}`).join("\n");
-  }
+  // Logs de diagnóstico (somente servidor)
   if (RAG_DIAG) {
     const best = scored?.[0]?.score != null ? scored[0].score.toFixed(3) : "n/a";
     console.log(`[RAG] decision=${context ? "ON" : "OFF"} best=${best} thr=${RAG_SIM_THRESHOLD}`);
+    }
+
+  // Opcional: só manda “Fontes” ao paciente se explicitamente habilitado
+  if (APPEND_SOURCES_TO_PATIENT && context && sources?.length) {
+    text += "\n\nFontes:\n" + sources.map(s => `- ${s}`).join("\n");
+  }
+
+  // Opcional: só manda o rodapé “RAG: …” ao paciente se explicitamente habilitado
+  if (APPEND_RAG_DIAG_TO_PATIENT) {
+    const best = scored?.[0]?.score != null ? scored[0].score.toFixed(3) : "n/a";
     text += `\n\n(RAG: ${context ? "ON" : "OFF"} | best=${best} thr=${RAG_SIM_THRESHOLD})`;
   }
 
@@ -558,7 +583,7 @@ app.post("/webhook", (req, res) => {
               "Para te informar com precisão, vou confirmar com a recepção e já retorno por aqui.",
               `Se preferir falar agora com a secretária: ${waLink(SECRETARIA_WA, "Olá! Poderia me informar o endereço/telefone/horário, por favor?")}`
               ].join("\n");
-              await sendText(from, seguro + (RAG_DIAG ? "\n\n(RAG: OFF — bloqueio de alucinação)" : ""));
+              await sendText(from, seguro + (APPEND_RAG_DIAG_TO_PATIENT ? "\n\n(RAG: OFF — bloqueio de alucinação)" : ""));
               return;
           }
         }
