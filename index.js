@@ -51,8 +51,19 @@ const GOOGLE_REFRESH_TOKEN = process.env.GOOGLE_REFRESH_TOKEN || "";
 const CALENDAR_ID          = process.env.CALENDAR_ID || "primary";
 const TIMEZONE             = process.env.TIMEZONE || "America/Sao_Paulo";
 
-// Memória curta
+// === Templates WhatsApp (24h antes) ===
+const CONFIRM_TEMPLATE_NAME = process.env.CONFIRM_TEMPLATE_NAME || "confirm_consulta_24h";
+const CONFIRM_TEMPLATE_LANG = process.env.CONFIRM_TEMPLATE_LANG || "pt_BR";
+
+// === Fallbacks (se o RAG não trouxer) ===
+const CLINIC_ADDRESS_FALLBACK = process.env.CLINIC_ADDRESS_FALLBACK || "Rua Domingos de Morais, 2187, conj. 210, Bloco Paris, Vila Mariana, São Paulo - SP, 04035-000";
+const CONSULT_PRICE_FALLBACK   = process.env.CONSULT_PRICE_FALLBACK   || "R$ 700,00";
+
+// Memória curta (LLM)
 const SESS = new Map(); // wa_id -> [{role, content}]
+
+// Memória de agendamento (estado da coleta pós-escolha do horário)
+const BOOKINGS = new Map(); // wa_id -> { modality, slot, stage, data: {...} }
 
 // ---------- APP ----------
 const app = express();
@@ -99,7 +110,6 @@ async function sendText(to, body) {
   const url = `https://graph.facebook.com/${API_VERSION}/${PHONE_NUMBER_ID}/messages`;
   const payload = { messaging_product: "whatsapp", to, type: "text", text: { body } };
 
-  // 3 tentativas, timeouts mais generosos
   for (let attempt = 1; attempt <= 3; attempt++) {
     const res = await withTimeout(
       (signal) => fetch(url, {
@@ -108,7 +118,7 @@ async function sendText(to, body) {
         body: JSON.stringify(payload),
         signal
       }),
-      25000, // 25s
+      25000,
       { ok: false, status: 408, text: async () => "timeout" }
     );
     if (res?.ok) return;
@@ -129,7 +139,7 @@ async function sendButtons(to, bodyText, buttons) {
     interactive: {
       type: "button",
       body: { text: bodyText },
-      action: { buttons: buttons.slice(0,3) } // WA aceita até 3 botões
+      action: { buttons: buttons.slice(0,3) }
     }
   };
   for (let attempt = 1; attempt <= 3; attempt++) {
@@ -150,7 +160,33 @@ async function sendButtons(to, bodyText, buttons) {
   }
 }
 
-// Mark as read — erros 400/403/404 não devem bloquear o fluxo
+// Template (HSM) — confirmação 24h
+async function sendTemplate(to, templateName, langCode, bodyParams = []) {
+  if (!PHONE_NUMBER_ID || !WHATSAPP_TOKEN) return;
+  const url = `https://graph.facebook.com/${API_VERSION}/${PHONE_NUMBER_ID}/messages`;
+  const template = {
+    name: templateName,
+    language: { code: langCode || "pt_BR" }
+  };
+  if (bodyParams.length) {
+    template.components = [{
+      type: "body",
+      parameters: bodyParams.map(t => ({ type: "text", text: String(t) }))
+    }];
+  }
+  const payload = { messaging_product: "whatsapp", to, type: "template", template };
+  const res = await fetch(url, {
+    method: "POST",
+    headers: { "Authorization": `Bearer ${WHATSAPP_TOKEN}`, "Content-Type": "application/json" },
+    body: JSON.stringify(payload)
+  });
+  if (!res.ok) {
+    const txt = await res.text();
+    console.error("[WA] sendTemplate falhou:", res.status, txt);
+  }
+}
+
+// Mark as read
 async function markAsRead(messageId) {
   if (!PHONE_NUMBER_ID || !WHATSAPP_TOKEN) return;
   const url = `https://graph.facebook.com/${API_VERSION}/${PHONE_NUMBER_ID}/messages`;
@@ -191,11 +227,11 @@ function classify(text) {
   const billing = /(conv[eê]nio|plano de sa[úu]de|reembolso|carteirinha)/;
   if (billing.test(t)) return "handoff";
   
-  // perguntas sobre preço/valor
+  // preço
   const price = /(pre[çc]o|valor|custa|quanto custa|tabela|particular)/;
   if (price.test(t)) return "other";
 
-  // ligação telefônica
+  // ligação
   const falaDeAudio = /(audio|mensagem de voz|nota de voz|voz)/;
   const pedidoLigacao = /(ligacao|ligar|me liga|pode ligar|telefone|falar por telefone)/;
   if (!falaDeAudio.test(t) && pedidoLigacao.test(t)) return "handoff_phone";
@@ -284,7 +320,7 @@ async function loadRAG() {
   }
 }
 
-// ID Token (audience = TEI_URL) — host correto do Metadata Server
+// ID Token (audience = TEI_URL)
 async function getIdToken(audience) {
   const host = process.env.GCP_METADATA_HOST || "metadata.google.internal";
   const url = `http://${host}/computeMetadata/v1/instance/service-accounts/default/identity?audience=${
@@ -388,6 +424,43 @@ async function retrieveContext(query, k = 3) {
   return { context, sources, scored: top, picks };
 }
 
+// Helpers para extrair do RAG (preço e endereço) com fallback
+async function getConsultPriceStr() {
+  const q = "qual o preço da consulta particular";
+  const { picks } = await retrieveContext(q, 1);
+  if (picks?.[0]?.answer) {
+    const txt = String(picks[0].answer).trim();
+    // usa a primeira linha se for parágrafo grande
+    return txt.split("\n").find(x => x.trim()) || CONSULT_PRICE_FALLBACK;
+  }
+  return CONSULT_PRICE_FALLBACK;
+}
+async function getClinicAddressStr() {
+  const q = "qual o endereço do consultório";
+  const { picks } = await retrieveContext(q, 1);
+  if (picks?.[0]?.answer) {
+    const txt = String(picks[0].answer).trim();
+    return txt.split("\n").find(x => x.trim()) || CLINIC_ADDRESS_FALLBACK;
+  }
+  return CLINIC_ADDRESS_FALLBACK;
+}
+async function getPreConsultationText() {
+  const q = "orientações pré-consulta";
+  const { picks } = await retrieveContext(q, 1);
+  if (picks?.[0]?.answer) {
+    return String(picks[0].answer).trim();
+  }
+  // fallback simples e neutro
+  const addr = await getClinicAddressStr();
+  return [
+    "Orientações pré-consulta:",
+    "- Chegue com 10 minutos de antecedência.",
+    `- Endereço: ${addr}`,
+    "- Leve documento com foto e exames anteriores, se houver.",
+    "- Em caso de sintomas importantes (dor intensa, sangramento, febre), avise-nos imediatamente."
+  ].join("\n");
+}
+
 // ---------- Prompt ----------
 function systemPrompt(context = "") {
   return [
@@ -432,7 +505,6 @@ async function llmReply(wa_id, userText) {
     15000, null
   );
 
-  // retry curto em 429/503
   if (r && (r.status === 429 || r.status === 503)) {
     await sleep(600);
     r = await withTimeout(
@@ -442,12 +514,7 @@ async function llmReply(wa_id, userText) {
   }
 
   if (!r || !r.ok) {
-    const status = r ? r.status : "TIMEOUT";
-    let details = "";
-    try { details = r ? await r.text() : ""; } catch {}
-    console.error("Erro OpenRouter:", status, details);
-
-    // ✅ Fallback determinístico via RAG (melhor item)
+    // Fallback determinístico via RAG
     if (context && picks?.length) {
       const best = picks[0];
       let text = best.answer.trim();
@@ -472,7 +539,6 @@ async function llmReply(wa_id, userText) {
       } catch {}
       return text;
     }
-    // Sem RAG → genérico
     return "Entendi. Pode me contar um pouco mais para eu te ajudar melhor?";
   }
 
@@ -482,7 +548,7 @@ async function llmReply(wa_id, userText) {
   if (RAG_DIAG) {
     const best = scored?.[0]?.score != null ? scored[0].score.toFixed(3) : "n/a";
     console.log(`[RAG] decision=${context ? "ON" : "OFF"} best=${best} thr=${RAG_SIM_THRESHOLD}`);
-    }
+  }
 
   if (APPEND_SOURCES_TO_PATIENT && context && sources?.length) {
     text += "\n\nFontes:\n" + sources.map(s => `- ${s}`).join("\n");
@@ -492,8 +558,8 @@ async function llmReply(wa_id, userText) {
     text += `\n\n(RAG: ${context ? "ON" : "OFF"} | best=${best} thr=${RAG_SIM_THRESHOLD})`;
   }
 
-  const newHist = [...history, { role: "user", content: userText }, { role: "assistant", content: text }];
-  SESS.set(wa_id, newHist.slice(-6));
+  const historyNew = [...history, { role: "user", content: userText }, { role: "assistant", content: text }];
+  SESS.set(wa_id, historyNew.slice(-6));
 
   return text;
 }
@@ -537,8 +603,20 @@ app.get("/_diag/rag", async (req, res) => {
   }
 });
 
-// Utilitários de data/hora (SP)
-function fmtDate(dt) { return dt.setZone(TIMEZONE).toFormat("dd/LL (ccc)"); }
+// === Locale PT-BR (nomes de dias) ===
+const WD_PT = {
+  1: "Segunda-feira",
+  2: "Terça-feira",
+  3: "Quarta-feira",
+  4: "Quinta-feira",
+  5: "Sexta-feira",
+  6: "Sábado",
+  7: "Domingo"
+};
+function fmtDatePt(dt) {
+  const z = dt.setZone(TIMEZONE);
+  return `${z.toFormat("dd/LL")} (${WD_PT[z.weekday]})`;
+}
 function fmtTime(dt) { return dt.setZone(TIMEZONE).toFormat("HH:mm"); }
 
 // Google Calendar (via OAuth2 com refresh token)
@@ -571,51 +649,115 @@ async function gcalFreeBusy(dayStart) {
   return busy;
 }
 
-async function gcalCreateEvent({ start, end, patientName, patientPhone }) {
+async function gcalCreateEvent({
+  start, end, modality,
+  patientName, patientPhone, patientEmail, patientDOB,
+  hasInsurance, insuranceName, wantsInvoice, referral, priceStr, addressStr
+}) {
+  
+  const location = modality === "presencial"
+    ? (addressStr || CLINIC_ADDRESS_FALLBACK)
+    : "Consulta online";
+
+  const descriptionLines = [
+    `Consulta ${modality}`,
+    `Paciente: ${patientName}`,
+    `Telefone: +${patientPhone}`,
+    patientEmail ? `E-mail: ${patientEmail}` : null,
+    patientDOB ? `Nascimento: ${patientDOB}` : null,
+    hasInsurance != null ? `Convênio: ${hasInsurance ? (insuranceName || "Sim") : "Não"}` : null,
+    wantsInvoice != null ? `Nota fiscal: ${wantsInvoice ? "Sim" : "Não"}` : null,
+    referral ? `Como conheceu: ${referral}` : null,
+    priceStr ? `Preço informado: ${priceStr}` : null,
+    `Agendado via WhatsApp (Maria).`
+  ].filter(Boolean);
+
   const auth = getOAuth2Client();
   const calendar = google.calendar({ version: "v3", auth });
   const event = {
-    summary: `Consulta - Dr. Petronio Melo`,
-    description: `Paciente: ${patientName || "WhatsApp"}\nTelefone: +${patientPhone || ""}`,
+    summary: patientName || "Paciente",
+    location,
+    description: descriptionLines.join("\n"),
     start: { dateTime: start.toISO(), timeZone: TIMEZONE },
-    end:   { dateTime: end.toISO(),   timeZone: TIMEZONE }
+    end:   { dateTime: end.toISO(),   timeZone: TIMEZONE },
+    extendedProperties: {
+      private: {
+        modality,
+        patientPhone: String(patientPhone || ""),
+        patientEmail: String(patientEmail || ""),
+        patientDOB: String(patientDOB || ""),
+        hasInsurance: String(!!hasInsurance),
+        insuranceName: String(insuranceName || ""),
+        wantsInvoice: String(!!wantsInvoice),
+        referral: String(referral || ""),
+        priceStr: String(priceStr || ""),
+        confirm24hSent: "false"
+      }
+    }
   };
-  const resp = await calendar.events.insert({ calendarId: CALENDAR_ID, requestBody: event });
+  
+  if (patientEmail) {
+    event.attendees = [{ email: patientEmail }];
+  }
+
+  const resp = await calendar.events.insert({
+    calendarId: CALENDAR_ID,
+    requestBody: event
+  });
   return resp.data;
 }
 
-// Regras da clínica (Ter/Qui, 1h) ===
-function clinicSlotsForDay(dt) {
-  // 1=Seg ... 7=Dom ; Terça=2 ; Quinta=4
-  const weekday = dt.setZone(TIMEZONE).weekday;
-  const zdt = dt.setZone(TIMEZONE);
+// === Grades de horário ===
+// Presencial: Terça (14–20) → 14..19; Quinta (9–13) → 9..12
+function presencialSlotsForDay(dt) {
+  const w = dt.setZone(TIMEZONE).weekday;
+  const z = dt.setZone(TIMEZONE);
   let hours = [];
-  if (weekday === 2) { hours = [14,15,16,17,18,19]; }
-  else if (weekday === 4) { hours = [9,10,11,12]; }
-  return hours.map(h => zdt.set({ hour: h, minute: 0, second: 0, millisecond: 0 }));
+  if (w === 2)       hours = [14,15,16,17,18,19];
+  else if (w === 4)  hours = [9,10,11,12];
+  return hours.map(h => z.set({ hour: h, minute: 0, second: 0, millisecond: 0 }));
+}
+// Online:
+function onlineSlotsForDay(dt) {
+  const w = dt.setZone(TIMEZONE).weekday;
+  const z = dt.setZone(TIMEZONE);
+  let hours = [];
+  if (w === 1)       hours = [19,20];                // Segunda 19–21
+  else if (w === 2)  hours = [20];                   // Terça 20–21
+  else if (w === 3)  hours = [9,10];                 // Quarta 9–11
+  else if (w === 4)  hours = [15,16,17,18];          // Quinta 15–19
+  else if (w === 5)  hours = [14,15,16,17];          // Sexta 14–18
+  return hours.map(h => z.set({ hour: h, minute: 0, second: 0, millisecond: 0 }));
+}
+function slotListForDay(dt, modality) {
+  return (modality === "online" ? onlineSlotsForDay(dt) : presencialSlotsForDay(dt));
 }
 function isFree(slotStart, busyIntervals) {
   const slotEnd = slotStart.plus({ hours: 1 });
   const slot = Interval.fromDateTimes(slotStart, slotEnd);
   return !busyIntervals.some(b => slot.overlaps(Interval.fromDateTimes(b.start, b.end)));
 }
-async function nextTwoOffers(now = DateTime.now()) {
+// Ofertas: 1 por dia, nas duas datas úteis mais próximas da modalidade
+async function nextTwoOffers(now, modality) {
   const offers = [];
   let cursor = now.setZone(TIMEZONE).startOf("day");
   let guard = 0;
-  while (offers.length < 2 && guard < 40) {
+  while (offers.length < 2 && guard < 60) {
     guard++;
     cursor = cursor.plus({ days: 1 });
-    const w = cursor.weekday;
-    if (w !== 2 && w !== 4) continue;
+    const daySlots = slotListForDay(cursor, modality);
+    if (!daySlots.length) continue;
+
     let busy = [];
     try { busy = await gcalFreeBusy(cursor); } catch (e) {
       console.error("[GCAL] freeBusy falhou:", e?.message || e);
-      return []; // sem credenciais? devolve vazio para mensagem “sem oportunidade”
+      return [];
     }
-    const daySlots = clinicSlotsForDay(cursor);
+        
     const firstFree = daySlots.find(s => s > now && isFree(s, busy));
-    if (firstFree) offers.push({ start: firstFree, end: firstFree.plus({ hours: 1 }) });
+    if (firstFree) {
+      offers.push({ start: firstFree, end: firstFree.plus({ hours: 1 }) });
+    }
   }
   return offers;
 }
@@ -651,6 +793,110 @@ function shouldSuppress(wa_id, intent, norm) {
   return true;
 }
 
+// helpers de fluxo
+function modalityFromText(t) {
+  const n = normalize(t);
+  if (/(online|telemed|video|ídeo|teleconsulta|remoto)/.test(n)) return "online";
+  if (/(presencial|consultorio|consultório|no consultorio|no consultório)/.test(n)) return "presencial";
+  return null;
+}
+async function startBookingFlow(from, textHint) {
+  // zera estado anterior
+  BOOKINGS.set(from, { stage: "await_modality", data: {} });
+  const hint = modalityFromText(textHint || "");
+  if (hint) {
+    BOOKINGS.get(from).modality = hint;
+    await offerSlotsForModality(from, hint);
+  } else {
+    await sendButtons(from, "Prefere consulta presencial no consultório ou online?", [
+      { type: "reply", reply: { id: "mod|presencial", title: "Presencial" } },
+      { type: "reply", reply: { id: "mod|online",     title: "Online" } },
+    ]);
+  }
+}
+async function offerSlotsForModality(from, modality) {
+  BOOKINGS.set(from, { ...(BOOKINGS.get(from) || {}), modality, stage: "await_slot" });
+  const offers = await nextTwoOffers(DateTime.now(), modality);
+  if (!offers.length) {
+    await sendText(from, "No momento não encontrei oportunidade imediata. Posso verificar novas datas e te retorno por aqui.");
+    return;
+  }
+  const buttons = offers.slice(0, 2).map(o => ({
+    type: "reply",
+    reply: { id: `slot|${o.start.toISO()}|${modality}`, title: `${fmtDatePt(o.start)} • ${fmtTime(o.start)}` }
+  }));
+  await sendButtons(from, "Tenho estas oportunidades de consulta. Qual prefere?", buttons);
+}
+
+// validações
+function isValidEmail(s) { return /^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(String(s||"").trim()); }
+function parseDOB(s) {
+  const t = String(s||"").trim();
+  const dt = DateTime.fromFormat(t, "dd/LL/yyyy");
+  if (!dt.isValid) return null;
+  const age = Math.floor(DateTime.now().diff(dt, "years").years);
+  if (age < 0 || age > 120) return null;
+  return dt.toFormat("dd/LL/yyyy");
+}
+
+// Recebe respostas de coleta de dados
+async function handleBookingTextAnswer(from, text) {
+  const st = BOOKINGS.get(from);
+  if (!st) return false;
+
+  switch (st.stage) {
+    case "await_fullname": {
+      const name = String(text||"").trim();
+      if (name.length < 5) { await sendText(from, "Por favor, informe seu nome completo."); return true; }
+      st.data.fullName = name;
+      st.stage = "await_dob";
+      await sendText(from, "Obrigado. Qual sua data de nascimento? (formato DD/MM/AAAA)");
+      return true;
+    }
+    case "await_dob": {
+      const dob = parseDOB(text);
+      if (!dob) { await sendText(from, "Formato inválido. Informe como DD/MM/AAAA."); return true; }
+      st.data.dob = dob;
+      st.stage = "await_email";
+      await sendText(from, "Seu e-mail para confirmação e envio das orientações?");
+      return true;
+    }
+    case "await_email": {
+      const em = String(text||"").trim();
+      if (!isValidEmail(em)) { await sendText(from, "E-mail inválido. Pode conferir e me enviar novamente?"); return true; }
+      st.data.email = em;
+      st.stage = "await_has_insurance";
+      await sendButtons(from, "Possui plano de saúde?", [
+        { type: "reply", reply: { id: "yn|hasins|yes", title: "Sim" } },
+        { type: "reply", reply: { id: "yn|hasins|no",  title: "Não" } }
+      ]);
+      return true;
+    }
+    case "await_insurance_name": {
+      const plano = String(text||"").trim();
+      st.data.insuranceName = plano || "";
+      st.stage = "await_invoice";
+      await sendButtons(from, "Deseja nota fiscal da consulta?", [
+        { type: "reply", reply: { id: "yn|invoice|yes", title: "Sim" } },
+        { type: "reply", reply: { id: "yn|invoice|no",  title: "Não" } }
+      ]);
+      return true;
+    }
+    case "await_referral": {
+      st.data.referral = String(text||"").trim() || "";
+      st.stage = "await_confirm";
+      await sendButtons(from, "Conferi tudo. Posso confirmar o agendamento?", [
+        { type: "reply", reply: { id: "confirm|yes", title: "Confirmar" } },
+        { type: "reply", reply: { id: "confirm|no",  title: "Corrigir" } }
+      ]);
+      return true;
+    }
+    default:
+      return false;
+  }
+}
+
+// ---------- WEBHOOK ----------
 app.post("/webhook", (req, res) => {
   if (!validateSignature(req)) return res.status(401).send("Invalid signature");
   res.sendStatus(200);
@@ -660,7 +906,7 @@ app.post("/webhook", (req, res) => {
       const entry = req.body?.entry?.[0];
       const change = entry?.changes?.[0];
       const value = change?.value;
-      if (value?.statuses) return; // acks de entrega/visualização
+      if (value?.statuses) return; // acks
 
       const msg = value?.messages?.[0];
       if (!msg) return;
@@ -669,11 +915,11 @@ app.post("/webhook", (req, res) => {
       const mid  = msg.id;
       if (alreadyProcessed(mid)) return;
 
-      // Clique nos botões de agendamento
-
+      // INTERACTIVE
       if (msg.type === "interactive") {
         const i = msg.interactive || {};
-        // Flow/Form (mantido do seu código)
+        
+        // Flow/Form (mantido)
         if (i.type === "nfm_reply" && i.nfm_reply?.response_json) {
           const data = i.nfm_reply.response_json;
           const linhas = [];
@@ -686,30 +932,158 @@ app.post("/webhook", (req, res) => {
           await sendText(from, `Perfeito, recebi seus dados.${resumo}\nJá vou verificar horários disponíveis e te retorno por aqui.`);
           return;
         }
-        
-        // Botões de horário (escassez)
+       
+        // Botões do fluxo de agendamento
         const br = i.button_reply;
+        
+        // Modalidade
+        if (br?.id === "mod|presencial" || br?.id === "mod|online") {
+          const modality = br.id.endsWith("online") ? "online" : "presencial";
+          await offerSlotsForModality(from, modality);
+          return;
+        }
+
+        // Escolha de horário
         if (br?.id && String(br.id).startsWith("slot|")) {
           try {
-            const startISO = String(br.id).split("|")[1];
+            const parts = String(br.id).split("|"); // slot|ISO|mod
+            const startISO = parts[1];
+            const modality = parts[2] || "presencial";
             const start = DateTime.fromISO(startISO, { zone: TIMEZONE });
             const end   = start.plus({ hours: 1 });
 
-            const patientName = value?.contacts?.[0]?.profile?.name || from;
+            // Guarda a escolha e inicia coleta
+            const priceStr = await getConsultPriceStr();
+            const addressStr = await getClinicAddressStr();
 
-            const ev = await gcalCreateEvent({ start, end, patientName, patientPhone: from });
-            await sendText(from, `Perfeito! Sua consulta com o Dr. Petronio foi agendada para ${fmtDate(start)} às ${fmtTime(start)}.`);
+            BOOKINGS.set(from, {
+              modality,
+              slot: { start, end },
+              stage: "await_fullname",
+              data: { priceStr, addressStr }
+            });
+
+            const quando = `${fmtDatePt(start)} às ${fmtTime(start)} (${modality === "presencial" ? "Presencial" : "Online"})`;
+            await sendText(from, [
+              `Perfeito, reservei provisoriamente ${quando}.`,
+              `O valor da consulta é ${priceStr}.`,
+              "Para confirmar, preciso de alguns dados.",
+              "Qual é o seu nome completo?"
+            ].join("\n"));
+          } catch (e) {
+            console.error("[Agenda] erro após escolher slot:", e?.message || e);
+            await sendText(from, "Tive uma dificuldade técnica ao reservar agora. Vou confirmar com a recepção e retorno em instantes.");
+          }
+          return;
+        }
+
+        // Sim/Não — possui plano?
+        if (br?.id === "yn|hasins|yes" || br?.id === "yn|hasins|no") {
+          const st = BOOKINGS.get(from);
+          if (st) {
+            st.data.hasInsurance = br.id.endsWith("|yes");
+            if (st.data.hasInsurance) {
+              st.stage = "await_insurance_name";
+              await sendText(from, "Qual o nome do seu plano de saúde?");
+            } else {
+              st.stage = "await_invoice";
+              await sendButtons(from, "Deseja nota fiscal da consulta?", [
+                { type: "reply", reply: { id: "yn|invoice|yes", title: "Sim" } },
+                { type: "reply", reply: { id: "yn|invoice|no",  title: "Não" } }
+              ]);
+            }
+          }
+          return;
+        }
+
+        // Sim/Não — nota fiscal?
+        if (br?.id === "yn|invoice|yes" || br?.id === "yn|invoice|no") {
+          const st = BOOKINGS.get(from);
+          if (st) {
+            st.data.wantsInvoice = br.id.endsWith("|yes");
+            st.stage = "await_referral";
+            await sendText(from, "Como você conheceu o Dr. Petronio? (Ex.: Google, Instagram, indicação, etc.)");
+          }
+          return;
+        }
+
+        // Confirmação final
+        if (br?.id === "confirm|yes" || br?.id === "confirm|no") {
+          const st = BOOKINGS.get(from);
+          if (!st) return;
+          if (br.id.endsWith("|no")) {
+            await sendText(from, "Sem problemas. Posso te colocar com a secretária para ajustar os dados.");
+            await replyHandoff(from);
+            BOOKINGS.delete(from);
+            return;
+          }
+
+          // Confirmar e criar evento
+          try {
+            const patientName   = st.data.fullName;
+            const patientEmail  = st.data.email;
+            const patientDOB    = st.data.dob;
+            const hasInsurance  = !!st.data.hasInsurance;
+            const insuranceName = st.data.insuranceName || "";
+            const wantsInvoice  = !!st.data.wantsInvoice;
+            const referral      = st.data.referral || "";
+            const priceStr      = st.data.priceStr || CONSULT_PRICE_FALLBACK;
+            const addressStr    = st.data.addressStr || CLINIC_ADDRESS_FALLBACK;
+            const modality      = st.modality;
+
+            const ev = await gcalCreateEvent({
+              start: st.slot.start, end: st.slot.end, modality,
+              patientName, patientPhone: from, patientEmail, patientDOB,
+              hasInsurance, insuranceName, wantsInvoice, referral,
+              priceStr, addressStr
+            });
+
+            const quando = `${fmtDatePt(st.slot.start)} às ${fmtTime(st.slot.start)} (${modality === "presencial" ? "Presencial" : "Online"})`;
+            await sendText(from, [
+              "Agendamento confirmado.",
+              `Nome: ${patientName}`,
+              `Quando: ${quando}`,
+              modality === "presencial" ? `Endereço: ${addressStr}` : "Consulta online",
+              `Preço: ${priceStr}`,
+              "Se precisar remarcar, me avise por aqui.",
+            ].join("\n"));
+
+            // Enviar orientações pré-consulta
+            const pre = await getPreConsultationText();
+            await sendText(from, pre);
+
+            
           } catch (e) {
             console.error("[GCAL] falha ao criar evento:", e?.message || e);
-            await sendText(from, "Tive uma dificuldade técnica ao agendar agora. Vou confirmar com a recepção e retorno em instantes.");
+            await sendText(from, "Não consegui concluir o agendamento agora. Vou acionar a recepção e retorno em instantes.");
+          } finally {
+            BOOKINGS.delete(from);
           }
           return;
         }
       }
       
+      // TEXT
       if (msg.type === "text") {
         const userText = msg.text?.body || "";
         try { await markAsRead(mid); } catch (e) { console.warn("markAsRead falhou:", e); }
+
+        // se estamos no meio da coleta pós-slot, priorize esse fluxo
+        const stActive = BOOKINGS.get(from);
+        if (stActive) {
+          const handled = await handleBookingTextAnswer(from, userText);
+          if (handled) {
+            // avança para próxima etapa automaticamente
+            if (stActive.stage === "await_invoice" || stActive.stage === "await_has_insurance" || stActive.stage === "await_referral") {
+              // já há handlers para botões; nada aqui
+            } else if (stActive.stage === "await_dob" || stActive.stage === "await_email" || stActive.stage === "await_insurance_name") {
+              // aguardando texto — o handler acima conduz
+            } else if (stActive.stage === "await_fullname") {
+              // aguardando nome — handler acima conduz
+            }
+            return;
+          }
+        }
 
         const intent = classify(userText);
         const norm = normalize(userText);
@@ -726,33 +1100,17 @@ app.post("/webhook", (req, res) => {
         if (intent === "handoff_phone")  { await replyHandoffPhone(from); return; }
         if (intent === "handoff")        { await replyHandoff(from); return; }
 
-        // Intenção de agendamento → oferecer dois horários (escassez)
         if (intent === "booking") {
-          let offers = [];
-          try {
-            offers = await nextTwoOffers(DateTime.now());
-          } catch (e) {
-            console.error("[Agenda] nextTwoOffers falhou:", e?.message || e);
-          }
-          if (!offers?.length) {
-            await sendText(from, "No momento não encontrei uma oportunidade imediata. Posso verificar novas datas e te retorno por aqui.");
-            return;
-          }
-          const buttons = offers.slice(0, 2).map(o => ({
-            type: "reply",
-            reply: { id: `slot|${o.start.toISO()}`, title: `${fmtDate(o.start)} • ${fmtTime(o.start)}` }
-          }));
-          await sendButtons(from, "Tenho estas oportunidades de consulta. Qual prefere?", buttons);
+          await startBookingFlow(from, userText);
           return;
         }
 
-        // Caso geral (inclui “qual seu nome?”)
+        // Caso geral
         if (/qual( é| e)? (seu|seu\s+nome|o\s+seu\s+nome)\??$/i.test(userText.trim())) {
           await sendText(from, "Sou a Maria, secretária do Dr. Petronio.");
           return;
         }
 
-        // Bloqueio de alucinação para fatos críticos se RAG não tiver contexto
         if (isCriticalFact(userText)) {
           const { context } = await retrieveContext(userText, 3);
           if (!context) {
@@ -765,7 +1123,6 @@ app.post("/webhook", (req, res) => {
           }
         }
         
-        // RAG/LLM padrão
         const reply = await llmReply(from, userText);
         await sleep(200 + Math.floor(Math.random()*300));
         await sendText(from, reply);
@@ -774,6 +1131,70 @@ app.post("/webhook", (req, res) => {
       console.error("Erro no processamento assíncrono:", e);
     }
   });
+});
+
+// === Endpoint CRON: enviar template 24h antes ===
+app.get("/_cron/send-24h-reminders", async (req, res) => {
+  try {
+    const auth = getOAuth2Client();
+    const calendar = google.calendar({ version: "v3", auth });
+
+    // janela de 15min ao redor de 24h (roda de 15 em 15 minutos)
+    const now = DateTime.now().setZone(TIMEZONE);
+    const timeMin = now.plus({ hours: 23, minutes: 45 }).toISO();
+    const timeMax = now.plus({ hours: 24, minutes: 15 }).toISO();
+
+    const list = await calendar.events.list({
+      calendarId: CALENDAR_ID,
+      timeMin,
+      timeMax,
+      singleEvents: true,
+      orderBy: "startTime"
+    });
+
+    const events = list.data.items || [];
+    let sent = 0;
+
+    for (const ev of events) {
+      const ep = ev.extendedProperties?.private || {};
+      const already = ep.confirm24hSent === "true";
+      const phone = ep.patientPhone || "";
+      if (already || !phone) continue;
+
+      const startISO = ev.start?.dateTime || ev.start?.date;
+      if (!startISO) continue;
+      const start = DateTime.fromISO(startISO, { zone: TIMEZONE });
+      const modality = (ep.modality || "presencial") === "online" ? "Online" : "Presencial";
+      const dateStr = start.toFormat("dd/LL/yyyy");
+      const timeStr = start.toFormat("HH:mm");
+
+      const address = ev.location || CLINIC_ADDRESS_FALLBACK;
+
+      // Envia template
+      await sendTemplate(phone, CONFIRM_TEMPLATE_NAME, CONFIRM_TEMPLATE_LANG, [
+        ep.patientName || ev.summary || "Paciente",
+        dateStr,
+        timeStr,
+        modality,
+        modality === "Presencial" ? address : "Consulta online"
+      ]);
+
+      // marca como enviado
+      ep.confirm24hSent = "true";
+      await calendar.events.patch({
+        calendarId: CALENDAR_ID,
+        eventId: ev.id,
+        requestBody: { extendedProperties: { private: ep } }
+      });
+      sent++;
+      await sleep(200);
+    }
+
+    res.status(200).json({ ok: true, checked: events.length, sent });
+  } catch (e) {
+    console.error("CRON 24h erro:", e?.message || e);
+    res.status(500).json({ ok: false, error: String(e?.message || e) });
+  }
 });
 
 app.listen(PORT, "0.0.0.0", async () => {
@@ -802,11 +1223,13 @@ app.listen(PORT, "0.0.0.0", async () => {
     "TIMEZONE:", TIMEZONE,
     "GOOGLE_CLIENT_ID:", GOOGLE_CLIENT_ID,
     "GOOGLE_CLIENT_SECRET:", GOOGLE_CLIENT_SECRET,
-    "GOOGLE_REFRESH_TOKEN:", GOOGLE_REFRESH_TOKEN
-              
+    "GOOGLE_REFRESH_TOKEN:", GOOGLE_REFRESH_TOKEN,
+    "CONFIRM_TEMPLATE_NAME:", CONFIRM_TEMPLATE_NAME,
+    "CONFIRM_TEMPLATE_LANG:", CONFIRM_TEMPLATE_LANG            
   );
 });
 
 // Segurança extra de logs
 process.on("unhandledRejection", (r) => console.error("unhandledRejection:", r));
 process.on("uncaughtException", (e) => console.error("uncaughtException:", e));
+
